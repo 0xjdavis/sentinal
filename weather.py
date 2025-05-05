@@ -11,6 +11,114 @@ import plotly.graph_objects as go
 # API Keys
 TOMORROW_API_KEY = 'fJXZ5YVJ48PQqc7Nk5cLQ850iLfLVx9b'
 
+# API endpoint functionality
+def handle_api_requests():
+    """Handle API requests through URL parameters"""
+    params = st.query_params
+    
+    # Check if this is an API request
+    if "request_type" in params:
+        request_type = params.get("request_type")
+        
+        # Get common parameters
+        try:
+            lat = float(params.get("lat", "0"))
+            lon = float(params.get("lon", "0"))
+            source = params.get("source", "nws")
+            
+            # Process different request types
+            if request_type == "weather":
+                # Weather request
+                st.session_state.api_response = process_weather_request(lat, lon, source)
+                return True
+                
+            elif request_type == "forecast":
+                # Forecast request
+                st.session_state.api_response = process_forecast_request(lat, lon, source)
+                return True
+                
+            elif request_type == "geocoding":
+                # Geocoding request
+                query = params.get("query", "")
+                st.session_state.api_response = process_geocoding_request(query)
+                return True
+                
+            elif request_type == "healthcheck":
+                # Health check endpoint
+                st.session_state.api_response = {"status": "ok", "message": "Weather API is running"}
+                return True
+        except Exception as e:
+            st.session_state.api_response = {"success": False, "error": str(e)}
+            return True
+    
+    return False
+
+# Process weather request
+def process_weather_request(lat, lon, source):
+    """Process a weather data request"""
+    if "ui_agent" not in st.session_state:
+        return {"success": False, "message": "Weather service not initialized"}
+    
+    result = st.session_state.ui_agent.get_weather_for_location(lat, lon, source)
+    return result
+
+# Process forecast request
+def process_forecast_request(lat, lon, source):
+    """Process a forecast data request"""
+    if "ui_agent" not in st.session_state:
+        return {"success": False, "message": "Weather service not initialized"}
+    
+    result = st.session_state.ui_agent.get_forecast_for_location(lat, lon, source)
+    return result
+
+# Process geocoding request
+def process_geocoding_request(query):
+    """Process a geocoding request"""
+    if "geocoding_agent" not in st.session_state:
+        return {"success": False, "message": "Geocoding service not initialized"}
+    
+    result = st.session_state.geocoding_agent.search_location(query)
+    return result
+
+# Display API response for API requests
+def display_api_response():
+    """Display API response for API requests"""
+    if "api_response" in st.session_state:
+        # Display the response in a code block
+        st.json(st.session_state.api_response)
+        
+        # Add information about how to use the API
+        st.markdown("""
+        ## Weather API
+        
+        This endpoint can be used by other applications to get weather data.
+        
+        ### Example Requests:
+        
+        **Get Weather:**
+        ```
+        GET /?request_type=weather&lat=39.1395453&lon=-120.1664349&source=nws
+        ```
+        
+        **Get Forecast:**
+        ```
+        GET /?request_type=forecast&lat=39.1395453&lon=-120.1664349&source=tomorrow
+        ```
+        
+        **Geocode Location:**
+        ```
+        GET /?request_type=geocoding&query=donner+lake
+        ```
+        
+        **Health Check:**
+        ```
+        GET /?request_type=healthcheck
+        ```
+        """)
+        
+        # Don't continue with normal app rendering
+        st.stop()
+
 # Weather Data Agent - Agent responsible for fetching and processing weather data
 class WeatherDataAgent:
     def __init__(self):
@@ -330,7 +438,14 @@ class WeatherDataAgent:
             return "snow"
         elif "rain" in forecast_text or "rain" in short_forecast or "shower" in forecast_text or "shower" in short_forecast:
             return "rain"
-        elif "precipitation" in forecast_text or current_period.get("probabilityOfPrecipitation", {}).get("value", 0) > 30:
+        # Fix: Check if probabilityOfPrecipitation exists and has a value before comparing
+        elif "precipitation" in forecast_text or (
+                "probabilityOfPrecipitation" in current_period and 
+                current_period["probabilityOfPrecipitation"] and
+                "value" in current_period["probabilityOfPrecipitation"] and
+                current_period["probabilityOfPrecipitation"]["value"] and
+                current_period["probabilityOfPrecipitation"]["value"] > 30
+            ):
             # If specific type not mentioned but precipitation is likely
             if current_period["temperature"] < 36:
                 return "snow"
@@ -438,6 +553,11 @@ class UIAgent:
         source = weather_data["source"]
         
         if source == "nws":
+            # Fix: Handle potential None value in precipitation_prob
+            precip_prob = weather_data['current']['probabilityOfPrecipitation']
+            if precip_prob is None:
+                precip_prob = 0
+                
             return {
                 "success": True,
                 "data": weather_data,
@@ -447,7 +567,7 @@ class UIAgent:
                     "conditions": weather_data['current']['shortForecast'],
                     "wind": f"{weather_data['current']['windSpeed']} {weather_data['current']['windDirection']}",
                     "precipitation_type": weather_data['current']['precipitationType'],
-                    "precipitation_prob": weather_data['current']['probabilityOfPrecipitation'],
+                    "precipitation_prob": precip_prob,
                     "forecast": weather_data['current']['detailedForecast'],
                     "icon": weather_data['current']['icon'],
                     "alerts": []  # NWS alerts would be fetched separately
@@ -458,9 +578,18 @@ class UIAgent:
             temp_f = round(weather_data['current']['temperature'] * 9/5 + 32)
             feels_like_f = round(weather_data['current']['temperatureApparent'] * 9/5 + 32)
             
-            # Determine precipitation type text
+            # Determine precipitation type text - Fix: Add validation to prevent NoneType errors
+            precip_type_index = weather_data['current']['precipitationType'] 
             precip_types = ['', 'Rain', 'Snow', 'Freezing Rain', 'Ice Pellets']
-            precip_type = precip_types[weather_data['current']['precipitationType']] if weather_data['current']['precipitationType'] < len(precip_types) else 'Precipitation'
+            
+            # Fix: Check if precipitationType exists and is within valid range
+            if precip_type_index is not None and 0 <= precip_type_index < len(precip_types):
+                precip_type = precip_types[precip_type_index]
+            else:
+                precip_type = 'Unknown'
+            
+            # Fix: Check if precipitationProbability exists before comparing
+            precip_prob = weather_data['current'].get('precipitationProbability', 0)
             
             return {
                 "success": True,
@@ -470,12 +599,12 @@ class UIAgent:
                     "temperature": f"{temp_f}°F (Feels like: {feels_like_f}°F)",
                     "conditions": weather_data['current']['weatherText'],
                     "wind": f"{round(weather_data['current']['windSpeed'])} mph {self.get_wind_direction(weather_data['current']['windDirection'])}",
-                    "precipitation_type": precip_type.lower() if weather_data['current']['precipitationProbability'] > 10 else None,
-                    "precipitation_prob": weather_data['current']['precipitationProbability'],
-                    "humidity": weather_data['current']['humidity'],
-                    "visibility": weather_data['current']['visibility'],
-                    "uv_index": weather_data['current']['uvIndex'],
-                    "alerts": weather_data['rawData'].get('alerts', [])
+                    "precipitation_type": precip_type.lower() if precip_prob > 10 else None,
+                    "precipitation_prob": precip_prob,
+                    "humidity": weather_data['current'].get('humidity', 0),
+                    "visibility": weather_data['current'].get('visibility', 0),
+                    "uv_index": weather_data['current'].get('uvIndex', 0),
+                    "alerts": weather_data.get('rawData', {}).get('alerts', [])
                 }
             }
         else:
@@ -801,44 +930,42 @@ class GeocodingAgent:
 def main():
     # Set page configuration
     st.set_page_config(
-        page_title="Weather Assistant", 
-        page_icon="🌤️", 
-        layout="wide"
+        page_title="Weather Assistant",
+        page_icon="🌤️",
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
+    
+    # Check for API requests at the beginning
+    is_api_request = handle_api_requests()
+    
+    # If this is an API request, display the response and stop
+    if is_api_request:
+        display_api_response()
     
     # Add custom CSS to make elements use full width
     st.markdown("""
     <style>
     .block-container {
-        min-width: 100%;
+        max-width: 100%;
         padding-top: 1rem;
         padding-right: 1rem;
         padding-left: 1rem;
         padding-bottom: 0rem;
     }
-    .element-container {
-        width: 100%;
+    .st-emotion-cache-x78sv8 {
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+    .st-emotion-cache-z5fcl4 {
+        padding-top: 0rem;
     }
     .stTable {
-        width: 100%;
+        width: 100% !important;
     }
     th, td {
-        text-align: center;
+        text-align: center !important;
     }
-                
-    .stVerticalBlockBorderWrapper{
-        width:100%
-    }
-    div[data-testid="stExpander"] {
-        width: 100%;
-    }
-    div[data-testid="stHorizontalBlock"] {
-        width: 100%;
-    }
-    div[data-testid="stVerticalBlock"] {
-        width: 100%;
-    }
-                
     </style>
     """, unsafe_allow_html=True)
     
@@ -926,15 +1053,28 @@ def main():
         # Debug toggle
         st.subheader("Debug")
         show_debug = st.checkbox("Show agent communication logs", value=False)
+        
+        # Add API documentation to sidebar
+        st.divider()
+        with st.expander("API Documentation", expanded=False):
+            st.subheader("Weather API Endpoints")
+            st.markdown("""
+            This app provides API endpoints for other applications to access weather data.
+            
+            URL parameter-based API:
+            
+            - **Weather:** `/?request_type=weather&lat=LAT&lon=LON&source=SOURCE`
+            - **Forecast:** `/?request_type=forecast&lat=LAT&lon=LON&source=SOURCE`
+            - **Geocoding:** `/?request_type=geocoding&query=LOCATION`
+            - **Health Check:** `/?request_type=healthcheck`
+            """)
     
     # Create two equal columns for current weather and forecast
     col1, col2 = st.columns(2)
     
     with col1:
         # Current weather section
-        
-
-        st.markdown("<div style=\"border:1px red dashed; width='100%'\">Weather</div>", unsafe_allow_html=True)
+        st.header(f"Current Weather")
         st.caption(f"Location: {st.session_state.current_location['name']}")
         
         # Get weather information
@@ -947,7 +1087,22 @@ def main():
         if weather_result["success"]:
             display = weather_result["display"]
             
-            # Create a nice weather card
+            # Add CSS to make the container full width
+            st.markdown("""
+            <style>
+            div[data-testid="stExpander"] {
+                width: 100%;
+            }
+            div[data-testid="stHorizontalBlock"] {
+                width: 100%;
+            }
+            div[data-testid="stVerticalBlock"] {
+                width: 100%;
+            }
+            </style>
+            """, unsafe_allow_html=True)
+            
+            # Create a nice weather card with full width
             with st.container(border=True):
                 current_time = datetime.now().strftime("%I:%M %p - %a, %b %d, %Y")
                 st.caption(f"As of {current_time}")
@@ -989,70 +1144,6 @@ def main():
                 if "forecast" in display:
                     st.markdown("### Forecast")
                     st.write(display["forecast"])
-
-
-                    # Moved
-                    
-                    # Forecast section
-                    # Get forecast information
-                    forecast_result = st.session_state.ui_agent.get_forecast_for_location(
-                        st.session_state.current_location["lat"],
-                        st.session_state.current_location["lon"],
-                        st.session_state.current_source
-                    )
-                    
-                    if forecast_result["success"]:
-                        # Display forecast chart
-                        chart_result = st.session_state.ui_agent.format_forecast_display(
-                            forecast_result["data"], 
-                            display_type="chart"
-                        )
-                        
-                        if chart_result["success"]:
-                            st.plotly_chart(chart_result["chart"], use_container_width=True)
-                        
-                        # Display forecast details as tables
-                        st.markdown("### 2-Day Forecast")
-                        
-                        if st.session_state.current_source == "nws":
-                            # Create a DataFrame for the NWS forecast periods (first 4)
-                            periods = forecast_result["data"]["forecastPeriods"][:4]
-                            
-                            # Create a DataFrame for the table
-                            forecast_df = pd.DataFrame([
-                                {
-                                    "Period": period["name"],
-                                    "Temperature": f"{period['temperature']}°{period['temperatureUnit']}",
-                                    "Wind": f"{period['windSpeed']} {period['windDirection']}",
-                                    "Conditions": period["shortForecast"]
-                                }
-                                for period in periods
-                            ])
-                            
-                            # Display the table with full width
-                            st.dataframe(forecast_df, use_container_width=True)
-                            
-                        else:
-                            # Display Tomorrow.io daily forecast
-                            if "timelines" in forecast_result["data"] and "daily" in forecast_result["data"]["timelines"]:
-                                daily_data = forecast_result["data"]["timelines"]["daily"][:4]  # Show up to 4 days
-                                
-                                # Create a DataFrame for the table
-                                forecast_df = pd.DataFrame([
-                                    {
-                                        "Day": datetime.fromisoformat(day["time"].replace("Z", "+00:00")).strftime('%A, %b %d'),
-                                        "Temperature": f"{round(day['values']['temperatureMin'] * 9/5 + 32)}°F to {round(day['values']['temperatureMax'] * 9/5 + 32)}°F",
-                                        "Wind": f"{round(day['values'].get('windSpeedAvg', 0))} mph {st.session_state.ui_agent.get_wind_direction(day['values'].get('windDirectionAvg', 0))}",
-                                        "Conditions": st.session_state.data_agent.get_weather_text(day['values'].get('weatherCodeMax', 1001))
-                                    }
-                                    for day in daily_data
-                                ])
-                                
-                                # Display the table with full width
-                                st.dataframe(forecast_df, use_container_width=True)
-                    else:
-                        st.error(f"Error loading forecast data: {forecast_result.get('message', 'Unknown error')}")
-                
                 
                 # Alerts (if any)
                 if "alerts" in display and display["alerts"]:
@@ -1064,7 +1155,69 @@ def main():
         else:
             st.error(f"Error loading weather data: {weather_result.get('message', 'Unknown error')}")
     
-   
+    with col2:
+        # Forecast section
+        st.header("Forecast")
+        
+        # Get forecast information
+        forecast_result = st.session_state.ui_agent.get_forecast_for_location(
+            st.session_state.current_location["lat"],
+            st.session_state.current_location["lon"],
+            st.session_state.current_source
+        )
+        
+        if forecast_result["success"]:
+            # Display forecast chart
+            chart_result = st.session_state.ui_agent.format_forecast_display(
+                forecast_result["data"], 
+                display_type="chart"
+            )
+            
+            if chart_result["success"]:
+                st.plotly_chart(chart_result["chart"], use_container_width=True)
+            
+            # Display forecast details as tables
+            st.markdown("### 2-Day Forecast")
+            
+            if st.session_state.current_source == "nws":
+                # Create a DataFrame for the NWS forecast periods (first 4)
+                periods = forecast_result["data"]["forecastPeriods"][:4]
+                
+                # Create a DataFrame for the table
+                forecast_df = pd.DataFrame([
+                    {
+                        "Period": period["name"],
+                        "Temperature": f"{period['temperature']}°{period['temperatureUnit']}",
+                        "Wind": f"{period['windSpeed']} {period['windDirection']}",
+                        "Conditions": period["shortForecast"]
+                    }
+                    for period in periods
+                ])
+                
+                # Display the table with full width
+                st.dataframe(forecast_df, use_container_width=True)
+                
+            else:
+                # Display Tomorrow.io daily forecast
+                if "timelines" in forecast_result["data"] and "daily" in forecast_result["data"]["timelines"]:
+                    daily_data = forecast_result["data"]["timelines"]["daily"][:4]  # Show up to 4 days
+                    
+                    # Create a DataFrame for the table
+                    forecast_df = pd.DataFrame([
+                        {
+                            "Day": datetime.fromisoformat(day["time"].replace("Z", "+00:00")).strftime('%A, %b %d'),
+                            "Temperature": f"{round(day['values']['temperatureMin'] * 9/5 + 32)}°F to {round(day['values']['temperatureMax'] * 9/5 + 32)}°F",
+                            "Wind": f"{round(day['values'].get('windSpeedAvg', 0))} mph {st.session_state.ui_agent.get_wind_direction(day['values'].get('windDirectionAvg', 0))}",
+                            "Conditions": st.session_state.data_agent.get_weather_text(day['values'].get('weatherCodeMax', 1001))
+                        }
+                        for day in daily_data
+                    ])
+                    
+                    # Display the table with full width
+                    st.dataframe(forecast_df, use_container_width=True)
+        else:
+            st.error(f"Error loading forecast data: {forecast_result.get('message', 'Unknown error')}")
+    
     # Display communication logs if debug is enabled
     if show_debug:
         st.header("Agent Communication Logs")
